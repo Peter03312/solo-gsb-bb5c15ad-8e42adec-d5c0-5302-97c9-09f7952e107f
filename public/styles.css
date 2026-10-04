@@ -210,6 +210,9 @@ table.measure.compact th, table.measure.compact td { padding: 4px 6px; }
 #rp-grid-result tr[data-grid-index] { cursor: pointer; }
 #rp-grid-result tr[data-grid-index]:hover td { background: rgba(0,229,255,.05); }
 #rp-grid-result tr.grid-row-active td { background: rgba(0,229,255,.12) !important; }
+#rp-partition-result tr[data-part-key] { cursor: pointer; }
+#rp-partition-result tr[data-part-key]:hover td { background: rgba(0,229,255,.05); }
+#rp-partition-result tr.grid-row-active td { background: rgba(0,229,255,.12) !important; }
 .cluster-list { display: flex; flex-direction: column; gap: 5px; margin: 8px 0; }
 .cluster-row {
   border: 1px solid var(--line); border-radius: 7px;

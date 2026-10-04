@@ -22,6 +22,7 @@ class CanvasView {
     this.hover = null;
     this.panning = false;
     this.panStart = null;
+    this.panMoved = false;   // 只读模式下本次按下是否发生了拖动（用于区分点击与平移）
     this.spaceDown = false;
 
     // 数据由外部通过 bindState 提供
@@ -125,10 +126,12 @@ class CanvasView {
 
   onDown(e) {
     const st = this.getState();
-    // 只读模式（如修订预览）：所有绘制/定标/迁移点击一律退化为平移
+    // 只读模式（如修订预览）：默认退化为平移；左键点击（未拖动）时通知 onPick
     if (st.readOnly) {
       this.panning = true;
-      this.panStart = { x: e.clientX, y: e.clientY, tx: this.tx, ty: this.ty };
+      this.panMoved = false;
+      this.panStart = { x: e.clientX, y: e.clientY, tx: this.tx, ty: this.ty,
+        pick: e.button === 0 && this.cb.onPick ? this.clampImg(this.eventImg(e)) : null };
       this.canvas.classList.add('panning');
       return;
     }
@@ -169,6 +172,10 @@ class CanvasView {
   onMove(e) {
     const rect = this.canvas.getBoundingClientRect();
     if (this.panning) {
+      if (this.panStart && (Math.abs(e.clientX - this.panStart.x) > 3 ||
+          Math.abs(e.clientY - this.panStart.y) > 3)) {
+        this.panMoved = true;
+      }
       this.tx = this.panStart.tx + (e.clientX - this.panStart.x);
       this.ty = this.panStart.ty + (e.clientY - this.panStart.y);
       this.render();
@@ -183,6 +190,10 @@ class CanvasView {
   }
 
   onUp() {
+    // 只读模式下未拖动的左键按下视为点击：通知 onPick（拖动平移不触发）
+    if (this.panning && this.panStart && this.panStart.pick && !this.panMoved) {
+      this.cb.onPick && this.cb.onPick(this.panStart.pick);
+    }
     this.panning = false;
     this.canvas.classList.remove('panning');
   }
@@ -257,6 +268,11 @@ class CanvasView {
 
     // 视野网格密度分析叠加（报告详情页；数据来自只读 HTTP 接口，与表格数值同源）
     if (st.gridOverlay) this.drawGridOverlay(ctx, st.gridOverlay, st.gridSelectedIndex);
+
+    // 最近质心责任区叠加（报告详情页；多边形为像素栅格等值线简化而来，runs 为逐像素真值）
+    if (st.partitionOverlay) {
+      this.drawPartitionOverlay(ctx, st.partitionOverlay, st.partitionSelectedKey);
+    }
 
     // 正在绘制的环
     if (st.drawing) {
@@ -415,6 +431,71 @@ class CanvasView {
       ctx.strokeStyle = '#102027';
       ctx.stroke();
     }
+  }
+
+  // 最近质心责任区叠加：每个计入细胞的实际分区多边形（半透明填充 + 边界）、质心点。
+  // overlay 为 /api/reports/:id/centroid-partition 返回的 partition 对象。
+  drawPartitionOverlay(ctx, partition, selectedKey) {
+    const parts = partition.partitions || [];
+    parts.forEach((part, i) => {
+      const color = CELL_COLORS[i % CELL_COLORS.length];
+      const selected = selectedKey === part.key;
+      for (const poly of part.polygons || []) {
+        if (poly.length < 3) continue;
+        ctx.beginPath();
+        ctx.moveTo(poly[0].x, poly[0].y);
+        for (let k = 1; k < poly.length; k++) ctx.lineTo(poly[k].x, poly[k].y);
+        ctx.closePath();
+        ctx.fillStyle = this.hexWithAlpha(color, selected ? 0.42 : 0.2);
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = (selected ? 3.2 : 1.4) / this.k;
+        ctx.stroke();
+      }
+    });
+    // 选中区的质心与编号在最后高亮
+    for (const m of (partition.overlay && partition.overlay.centroids) || []) {
+      const idx = parts.findIndex((p) => p.key === m.key);
+      const color = CELL_COLORS[(idx < 0 ? 0 : idx) % CELL_COLORS.length];
+      const selected = selectedKey === m.key;
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, (selected ? 5.5 : 3.5) / this.k, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.lineWidth = 1.2 / this.k;
+      ctx.strokeStyle = '#102027';
+      ctx.stroke();
+    }
+  }
+
+  hexWithAlpha(hex, alpha) {
+    const h = hex.replace('#', '');
+    const r = parseInt(h.slice(0, 2), 16);
+    const g = parseInt(h.slice(2, 4), 16);
+    const b = parseInt(h.slice(4, 6), 16);
+    return `rgba(${r},${g},${b},${alpha})`;
+  }
+
+  // 责任区点击命中：以像素游程 runs 为真值（y/x0/x1 为全局像素整数坐标，含端点），
+  // 点击位置取整为像素坐标后查所在行的列段；返回该分区的 cellKey，未命中返回 null。
+  hitPartition(imgPt, partition) {
+    if (!partition || partition.empty) return null;
+    const px = Math.floor(imgPt.x);
+    const py = Math.floor(imgPt.y);
+    // runs 按 y 升序构造：二分定位行，再在行内线性查找
+    const runs = partition.runs || [];
+    let lo = 0, hi = runs.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (runs[mid].y < py) lo = mid + 1; else hi = mid;
+    }
+    for (let i = lo; i < runs.length && runs[i].y === py; i++) {
+      if (px >= runs[i].x0 && px <= runs[i].x1) {
+        const part = (partition.partitions || [])[runs[i].owner];
+        return part ? part.key : null;
+      }
+    }
+    return null;
   }
 
   drawPolygon(ctx, poly, opt) {

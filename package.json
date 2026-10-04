@@ -6,7 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server/index.js",
-    "test": "node test-geometry.js && node test-fields.js && node test-merge.js && node test-coverage.js && node test-compare.js && node test-transfer.js && node test-corrections.js && node test-correct-api.js && node test-clusters.js && node test-contacts-api.js && node test-revisions-api.js && node test-coverage-api.js && node test-coverage-diff-api.js && node test-field-grid.js && node test-field-grid-api.js"
+    "test": "node test-geometry.js && node test-fields.js && node test-merge.js && node test-coverage.js && node test-compare.js && node test-transfer.js && node test-corrections.js && node test-correct-api.js && node test-clusters.js && node test-contacts-api.js && node test-revisions-api.js && node test-coverage-api.js && node test-coverage-diff-api.js && node test-field-grid.js && node test-field-grid-api.js && node test-centroid-partition.js && node test-centroid-partition-api.js"
   },
   "engines": {
     "node": ">=20"

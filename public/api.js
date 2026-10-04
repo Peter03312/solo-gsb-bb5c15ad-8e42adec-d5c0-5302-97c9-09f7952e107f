@@ -131,6 +131,14 @@ const API = {
       body: JSON.stringify(payload)
     }));
   },
+  // 单视野最近质心责任区划分：报告冻结视野按像素欧氏距离分给最近计入细胞（只读，不写回报告）
+  async reportCentroidPartition(reportId, fieldId) {
+    return jsonOrThrow(await fetch(`/api/reports/${reportId}/centroid-partition`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fieldId })
+    }));
+  },
   async listReports() {
     return jsonOrThrow(await fetch('/api/reports'));
   },

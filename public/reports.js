@@ -27,6 +27,11 @@ const Reports = {
   gridResult: null,        // 最近一次网格密度分析结果（含 grid 对象）
   gridSelectedIndex: null, // 当前在结果表格中选中的格子 index（画布高亮用）
 
+  // 最近质心责任区划分状态（只读查询，只使用发布时冻结数据）
+  partitionReportId: null,
+  partitionResult: null,   // 最近一次划分结果（含 partition 对象）
+  partitionSelectedKey: null, // 当前在快照上/表格中选中的细胞 key
+
   async showList() {
     document.getElementById('view-reports').classList.remove('hidden');
     await this.refresh();
@@ -310,6 +315,32 @@ const Reports = {
       };
     }
 
+    // 细胞最近质心责任区：只读查询，只用发布时冻结数据；切换报告时重置
+    this.partitionReportId = r.id;
+    this.partitionResult = null;
+    this.partitionSelectedKey = null;
+    const partInput = document.getElementById('rp-partition-field-id');
+    if (partInput) partInput.value = '';
+    const partOptions = document.getElementById('rp-partition-field-options');
+    if (partOptions) {
+      partOptions.innerHTML = (r.fields || []).map((f, i) => {
+        const name = f.name || `视野 ${i + 1}`;
+        return `<option value="${this.esc(f.id)}">${this.esc(name)}</option>`;
+      }).join('');
+    }
+    document.getElementById('rp-partition-result').innerHTML =
+      (r.fields || []).length
+        ? '<p class="hint">输入视野 id 或名称后点「划分责任区」。</p>'
+        : '<p class="hint">本报告发布时未圈定取样视野，无法划分责任区。</p>';
+    document.getElementById('rp-partition-clear').classList.add('hidden');
+    document.getElementById('rp-partition-run').onclick = () => this.runPartitionAnalysis();
+    document.getElementById('rp-partition-clear').onclick = () => this.clearPartitionOverlay();
+    if (partInput) {
+      partInput.onkeydown = (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); this.runPartitionAnalysis(); }
+      };
+    }
+
     document.getElementById('rp-png-link').href = API.exportPngUrl(r.id);
     document.getElementById('rp-png-link').setAttribute('download', `${r.id}_annotated.png`);
     document.getElementById('rp-csv-link').href = API.exportCsvUrl(r.id);
@@ -319,7 +350,8 @@ const Reports = {
 
     if (!this.detailView) {
       this.detailView = new CanvasView(document.getElementById('report-canvas'), {
-        onZoom: (k) => { document.getElementById('report-zoom').textContent = `${Math.round(k * 100)}%`; }
+        onZoom: (k) => { document.getElementById('report-zoom').textContent = `${Math.round(k * 100)}%`; },
+        onPick: (pt) => this.pickOnSnapshot(pt)
       });
       this.detailView.readOnly = true;
     }
@@ -327,7 +359,10 @@ const Reports = {
       cells: r.cells, fields: r.fields || [], calib: r.calib,
       activeCellId: null, highlightCellIds: this.contactHighlight,
       gridOverlay: this.gridResult ? this.gridResult.grid : null,
-      gridSelectedIndex: this.gridSelectedIndex
+      gridSelectedIndex: this.gridSelectedIndex,
+      partitionOverlay: this.partitionResult && !this.partitionResult.empty
+        ? this.partitionResult.partition : null,
+      partitionSelectedKey: this.partitionSelectedKey
     }));
     await this.detailView.loadImage(`/api/reports/${r.id}/file`, r.width, r.height);
     this.detailView.readOnly = true;
@@ -350,6 +385,9 @@ const Reports = {
     this.gridReportId = null;
     this.gridResult = null;
     this.gridSelectedIndex = null;
+    this.partitionReportId = null;
+    this.partitionResult = null;
+    this.partitionSelectedKey = null;
   },
 
   esc(s) {
@@ -720,6 +758,120 @@ const Reports = {
     document.getElementById('rp-grid-result').innerHTML =
       '<p class="hint">选择视野并给定行×列数（各 1～40）后点「分析网格密度」。</p>';
     document.getElementById('rp-grid-clear').classList.add('hidden');
+    if (this.detailView) this.detailView.render();
+  },
+
+  // ---------- 细胞最近质心责任区划分（发布时冻结；只读 HTTP，不写回报告） ----------
+
+  async runPartitionAnalysis() {
+    if (!this.partitionReportId) return;
+    const resEl = document.getElementById('rp-partition-result');
+    const fieldId = document.getElementById('rp-partition-field-id').value.trim();
+    if (!fieldId) {
+      resEl.innerHTML = '<p class="merge-error">请输入视野 id 或视野名称。</p>';
+      return;
+    }
+    resEl.innerHTML = '<p class="hint">计算中…</p>';
+    try {
+      const body = await API.reportCentroidPartition(this.partitionReportId, fieldId);
+      if (body.reportId !== this.partitionReportId) return; // 期间已切换报告
+      this.partitionResult = body;
+      this.partitionSelectedKey = null;
+      this.renderPartitionResult();
+    } catch (e) {
+      // 400：视野标识为空/不存在/重名；404：报告不存在。不写回任何数据
+      this.partitionResult = null;
+      this.partitionSelectedKey = null;
+      resEl.innerHTML = `<p class="merge-error">${this.esc(e.message)}</p>`;
+    }
+    document.getElementById('rp-partition-clear').classList.toggle('hidden', !this.partitionResult);
+    if (this.detailView) this.detailView.render();
+  },
+
+  renderPartitionResult() {
+    const resEl = document.getElementById('rp-partition-result');
+    const body = this.partitionResult;
+    if (!body) return;
+    const p = body.partition;
+
+    // 无计入细胞：返回空结果并提示（不划分任何像素）
+    if (body.empty || p.empty || !p.partitions.length) {
+      resEl.innerHTML = `
+        <table class="measure compact">
+          <tbody>
+            <tr><th>视野</th><td>${this.esc(p.fieldName || p.fieldId)}${body.matchedBy === 'name' ? '（按名称匹配）' : ''}</td></tr>
+            <tr><th>计入细胞</th><td><b>0</b> 个</td></tr>
+          </tbody>
+        </table>
+        <p class="merge-error">${this.esc(body.message || '该视野没有任何计入细胞，返回空结果。')}</p>
+        <p class="hint">计入判定沿用净区域质心严格归属规则；请确认该视野冻结统计中的细胞数。</p>`;
+      return;
+    }
+
+    const rowsHtml = p.partitions.map((part, i) => {
+      const color = window.CANVAS_COLORS[i % window.CANVAS_COLORS.length];
+      const active = this.partitionSelectedKey === part.key ? ' class="grid-row-active"' : '';
+      const note = part.zeroArea ? '<span class="hint">零面积（质心重合，被首个细胞占有）</span>' : '';
+      return `<tr data-part-key="${this.esc(part.key)}"${active}>` +
+        `<td><span style="color:${color}">●</span> ${this.esc(part.name || `细胞 ${part.cellIndex + 1}`)}</td>` +
+        `<td>(${part.centroid.x}, ${part.centroid.y})</td>` +
+        `<td>${this.fmtPx(part.areaPx)}</td>` +
+        `<td>${this.esc(part.areaText)}</td>` +
+        `<td><b>${this.esc(part.ratioText)}</b></td>` +
+        `<td>${note}</td></tr>`;
+    }).join('');
+
+    resEl.innerHTML = `
+      <table class="measure compact">
+        <tbody>
+          <tr><th>视野</th><td>${this.esc(p.fieldName || p.fieldId)}${body.matchedBy === 'name' ? '（按名称匹配）' : ''} · 孔洞 ${p.fieldHoles} 个</td></tr>
+          <tr><th>计入细胞</th><td><b>${p.countedCellCount}</b> 个（沿用净区域质心严格归属规则）</td></tr>
+          <tr><th>视野净像素面积</th><td>${this.fmtPx(p.netPixelArea)} px²${p.calibrated ? ` · ${this.esc(p.netAreaText)} mm²` : ''}</td></tr>
+          <tr><th>各区面积合计</th><td>${this.fmtPx(p.sumAreaPx)} px²（＝视野净像素面积）</td></tr>
+          <tr><th>矢量净面积（鞋带公式，对照）</th><td>${this.fmtPx(p.vectorAreaPx)} px²</td></tr>
+        </tbody>
+      </table>
+      <div class="grid-table-wrap">
+        <table class="measure compact">
+          <thead><tr>
+            <th>细胞</th><th>质心 px</th><th>分区像素面积 px²</th>
+            <th>分区面积 mm²</th><th>占视野净面积</th><th></th>
+          </tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+      <p class="hint">分区按像素中心到各计入细胞净区域质心的<b>像素欧氏距离</b>划分（最近者得），
+        视野孔洞与外部不分配；等距边界为零面积，等距像素按报告细胞顺序归首个等距细胞。
+        右侧快照上各色块即<b>实际分区几何</b>，彩色点为计入细胞的净区域质心；
+        <b>点击快照上的分区或表格行</b>可高亮对应细胞（再点一次取消）。
+        结果只读取<b>发布时冻结数据</b>（发布时草稿 v${body.draftVersion}），
+        后续草稿修改或报告更正均不改变本报告结果；查询不写回报告。</p>`;
+    resEl.querySelectorAll('tr[data-part-key]').forEach((tr) => {
+      tr.onclick = () => this.selectPartitionCell(tr.dataset.partKey);
+    });
+  },
+
+  // 选中/取消某个责任区：表格行与快照点击共用
+  selectPartitionCell(key) {
+    if (!this.partitionResult) return;
+    this.partitionSelectedKey = this.partitionSelectedKey === key ? null : key;
+    this.renderPartitionResult();
+    if (this.detailView) this.detailView.render();
+  },
+
+  // 快照点击：命中像素游程则选中对应责任区（不命中则忽略，保留平移）
+  pickOnSnapshot(pt) {
+    if (!this.partitionResult || this.partitionResult.empty) return;
+    const key = this.detailView.hitPartition(pt, this.partitionResult.partition);
+    if (key) this.selectPartitionCell(key);
+  },
+
+  clearPartitionOverlay() {
+    this.partitionResult = null;
+    this.partitionSelectedKey = null;
+    document.getElementById('rp-partition-result').innerHTML =
+      '<p class="hint">输入视野 id 或名称后点「划分责任区」。</p>';
+    document.getElementById('rp-partition-clear').classList.add('hidden');
     if (this.detailView) this.detailView.render();
   },
 

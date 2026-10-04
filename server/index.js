@@ -18,6 +18,7 @@ const clustersSvc = require('./clusters');
 const revisionsSvc = require('./revisions');
 const coverageDiffSvc = require('./coverage-diff');
 const fieldGridSvc = require('./field-grid');
+const partitionSvc = require('./centroid-partition');
 const { renderAnnotatedPng } = require('./render');
 const { buildReportCsv, buildCombinedCsv, buildComparisonCsv, buildFieldStatsCsv, streamZip } = require('./exporter');
 
@@ -832,6 +833,53 @@ app.post('/api/reports/:id/field-grid', (req, res) => {
     matchedBy: resolved.matchBy,
     snapshotUrl: `/api/reports/${report.id}/file`,
     grid
+  });
+});
+
+// ---------- 报告单视野最近质心责任区划分（只读；只使用发布时冻结数据） ----------
+//
+// 请求体：{ fieldId }。fieldId 为视野 id 或名称（必须来自该报告冻结的 fields）。
+// 把视野净区域按像素欧氏距离分给最近的计入细胞（沿用净区域质心 + 视野严格归属规则）：
+// 视野孔洞及外部不分配；等距边界为零面积（按细胞顺序归首个等距者）；质心重合时首个细胞
+// 占有对应区域、其余细胞保留零面积记录。返回每个细胞的实际分区多边形/像素游程、
+// 像素面积、mm² 面积与占比；有计入细胞时各区面积合计等于参与像素总数（视野净像素面积）。
+// 无计入细胞时返回空结果并提示。只取发布时冻结的视野/细胞/标尺：
+// 后续草稿修改或报告更正不改变旧报告结果；查询不写回任何数据。
+app.post('/api/reports/:id/centroid-partition', (req, res) => {
+  const report = getReportOr404(req.params.id);
+  if (!report) return res.status(404).json({ error: '报告不存在' });
+  const body = req.body || {};
+
+  let resolved;
+  try {
+    resolved = partitionSvc.resolvePartitionField(report.fields, body.fieldId);
+  } catch (e) {
+    return res.status(e.status || 400).json({ error: e.message });
+  }
+
+  let partition;
+  try {
+    partition = partitionSvc.buildPartition(
+      resolved.field, report.cells,
+      report.calib ? report.calib.scale : null);
+  } catch (e) {
+    return res.status(500).json({ error: `责任区划分失败：${e.message}` });
+  }
+
+  res.json({
+    scope: 'report',
+    reportId: report.id,
+    title: report.title,
+    draftVersion: report.draftVersion,
+    calibrated: !!report.calib,
+    scaleUmPerPx: report.calib ? report.calib.scale : null,
+    matchedBy: resolved.matchBy,
+    snapshotUrl: `/api/reports/${report.id}/file`,
+    empty: partition.empty,
+    message: partition.empty
+      ? '该视野没有任何计入细胞（无净区域质心严格落在视野净区域内的细胞），视野净区域不做分配，返回空结果。'
+      : null,
+    partition
   });
 });
 

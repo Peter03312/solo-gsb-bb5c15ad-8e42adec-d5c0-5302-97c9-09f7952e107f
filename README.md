@@ -13,7 +13,11 @@
 细胞两两**净区域最短间距**、阈值内邻居与**连通簇**，并在报告快照上**高亮**所选簇；
 并可对报告内**单个取样视野**做**网格密度分析**：把视野外接矩形等分为 **行×列（各 1～40）** 网格，
 按格子与视野净区域的**几何交集**给出每格有效面积、按净区域质心把计入该视野的细胞分配到唯一格子，
-输出各格**细胞数与每 mm² 密度**（零面积格标「不可计算」）并在冻结快照上叠加网格。
+输出各格**细胞数与每 mm² 密度**（零面积格标「不可计算」）并在冻结快照上叠加网格；
+并可在报告详情按 **id 或名称**选取一个冻结取样视野查看**细胞最近质心责任区**：
+把视野净区域按**像素欧氏距离**分给最近的计入细胞（视野孔洞及外部不分配、等距边界不计面积、
+质心重合由报告顺序首个细胞占有），返回每个细胞的**实际分区几何、像素/mm² 面积与占比**，
+各区面积合计等于视野净像素面积，并可在冻结图片上**点击分区**查看对应细胞。
 
 - 技术栈：Node.js（Express）+ SQLite（better-sqlite3）+ 原生 Canvas 前端
 - 图片与数据**全部本地保存**（无任何外部服务依赖）：
@@ -192,11 +196,40 @@
     - 只读取报告**发布时冻结**的视野/细胞/标尺：**草稿后续修改或报告更正都不改变旧报告结果**；
       查询**只读**，不写回报告；**报告不存在 → 404**；**视野标识为空/不存在/重名 → 400**；
       **行/列数缺失、非整数或越出 1～40 → 400**。
+18. **报告单视野细胞最近质心责任区划分（像素欧氏距离，只读）**：在报告详情页
+    「**细胞最近质心责任区（发布时冻结）**」面板按 **id 或名称**（**id 始终优先精确匹配**）
+    选取**本报告冻结的一个取样视野**，查看该视野内每个计入细胞的责任分区。
+    - 只使用该报告**发布时冻结的轮廓、视野与标尺**：后续草稿改动或报告更正都
+      **不改变**旧报告的划分结果；分析**只读**、**不写库、不写回报告**；
+    - 参与划分的像素：**像素中心严格落在视野净区域**（严格在外环内、不在视野孔洞内/边界上）的像素；
+      **视野孔洞内部与视野外部一律不分配**（与质心归属使用同一套严格判定）；
+    - 每个参与像素按其中心到细胞**扣除孔洞后的净区域质心**的**像素欧氏距离**分给**最近的计入细胞**
+      （比较平方距离）；**计入细胞沿用现有视野严格归属规则**——只有净区域质心严格落在该视野净区域内
+      的细胞才参与（与该视野冻结 `fieldStats.cellCount` 同一口径），净面积为零的细胞无质心、不计入；
+    - **等距边界不计面积**：等距像素按**报告细胞顺序归首个等距细胞**（划分因此确定、可复现），
+      像素化的等距线不产生“无主面积”；**质心重合**时由报告顺序的**首个细胞占有**对应区域，
+      其余细胞保留 **面积 0 的零面积记录**（仍列出、占比 0）；
+    - 返回每个计入细胞（按报告细胞顺序）的：
+      - **实际分区几何**：像素网格 4-邻接等值线提取并简化的**分区多边形**（可能多个，含孔洞情形），
+        以及逐像素真值的 **RLE 游程** `runs`（行/列段/归属，供精确命中与逐像素重绘）；
+      - **像素面积** `areaPx`（参与像素计数，天然整数）、按冻结标尺换算的 **mm² 面积** `areaMm2`
+        （未定标为 `null`、文本「待定标」）、**占视野净像素面积比例** `ratioPercent`；
+      - 净区域质心坐标；零面积标记 `zeroArea`；
+    - **有计入细胞时各区面积合计恰好等于视野净像素面积**（`sumAreaPx = netPixelArea`，
+      占比合计 100%；响应另给鞋带公式的矢量净面积 `vectorAreaPx` 仅作对照，不参与划分）；
+    - **无计入细胞**（视野内无质心严格落入的细胞）时返回**空结果**（`empty: true`）并给出明确提示，
+      不划分任何像素；
+    - 页面在**报告冻结快照**上按细胞配色叠加各分区半透明色块、边界与质心点，
+      **点击快照上任意分区或结果表格行**即可高亮/查看该细胞（命中以 RLE 像素游程为真值，
+      再点一次取消），「清除分区」移除叠加；
+    - 校验：**报告不存在 → 404**；**视野标识为空/不存在/不属于该报告/名称歧义（重名）→ 400**
+      （重名时提示改用 id，id 优先精确匹配）。
 
 ## 配置项
 
-本轮（报告单视野网格密度分析）**未引入新的环境变量、外部依赖或表结构变更**：分析为只读实时计算，
-不写库。此前各轮的幂等迁移（`fields`、`corrects_report_id`、`correction_reason` 列）
+本轮（报告单视野细胞最近质心责任区划分）**未引入新的环境变量、外部依赖或表结构变更**：
+分析为只读实时计算，不写库，沿用既有 `npm start` 启动方式与配置。
+此前各轮的幂等迁移（`fields`、`corrects_report_id`、`correction_reason` 列）
 在旧数据库启动时自动完成、无需手工变更。沿用既有配置：
 
 | 环境变量 | 默认值 | 说明 |
@@ -311,6 +344,14 @@ npm start
     右侧报告快照上叠加青色网格线、按密度着色的格子与计入细胞的质心点，
     点击结果表格中的某一行可在快照上定位该格（再点一次取消），「清除网格」移除叠加。
     结果只读取发布时冻结数据，草稿修改或报告更正都不改变本报告结果。
+17. 需要查看视野内每个细胞的「地盘」时，打开**报告详情**，在「**细胞最近质心责任区
+    （发布时冻结）**」面板输入或选择**视野 id / 名称**后点「**划分责任区**」：
+    - 表格按报告细胞顺序列出每个计入细胞的质心、分区像素面积、mm² 面积与占比
+      （质心重合被首个细胞占有时，其余细胞显示**零面积**），并给出各区合计＝视野净像素面积的校验；
+    - 右侧冻结快照上叠加**实际分区色块与边界**，彩色点为计入细胞的净区域质心；
+      **直接点击快照上的色块**（或点击表格行）即可高亮查看该细胞，再点一次取消，「清除分区」移除叠加；
+    - 视野孔洞与视野外部不参与分配；视野内**没有任何计入细胞**时面板明确提示并返回空结果；
+    - 结果只读取发布时冻结数据，草稿修改或报告更正都不改变本报告结果。
 
 ## 目录结构
 
@@ -332,6 +373,7 @@ npm start
 │   ├── clusters.js    # 接触簇：阈值校验、净区域最短间距（含孔洞语义）、邻接对与连通簇
 │   ├── coverage-diff.js # 同切片两报告 · 单视野覆盖变化四类划分（平面排列，只读）
 │   ├── field-grid.js  # 报告单视野网格密度分析：外接矩形等分、格子∩净区域有效面积、质心归格（只读）
+│   ├── centroid-partition.js # 报告单视野最近质心责任区：像素中心栅格化净区域、按像素欧氏距离归最近计入细胞、RLE/分区多边形（只读）
 │   ├── render.js      # sharp + SVG 渲染标注 PNG
 │   └── exporter.js    # CSV（测量/汇总/视野统计/比较）与 ZIP 导出
 ├── public/            # 前端（原生 JS，无需构建）
@@ -348,6 +390,8 @@ npm start
 ├── test-coverage-diff-api.js # 两报告覆盖变化核对端到端 HTTP 自测（npm test，临时目录起服务）
 ├── test-field-grid.js # 视野网格密度分析纯逻辑自测（npm test）
 ├── test-field-grid-api.js # 视野网格密度分析端到端 HTTP 自测（npm test，临时目录起服务）
+├── test-centroid-partition.js # 最近质心责任区纯逻辑自测（npm test）
+├── test-centroid-partition-api.js # 最近质心责任区端到端 HTTP 自测（npm test，临时目录起服务）
 └── data/              # 运行后生成：app.db、images/、snapshots/
 ```
 
@@ -1323,6 +1367,185 @@ await fieldGrid(process.env.RID, 'fieldF', 4, 4);
 「分析网格密度」，结果表格下方即在报告快照上叠加网格、密度着色与计入细胞质心点，
 点击表格行可在快照上定位该格。
 
+## 报告单视野细胞最近质心责任区 HTTP 接口（像素欧氏距离划分，只读）
+
+对一份**已发布报告**冻结的**单个取样视野**做「最近质心责任区」划分：把视野净区域按
+**像素欧氏距离**分给最近的**计入细胞**（沿用净区域质心与视野严格归属规则）。只读取报告
+**发布时冻结**的视野/细胞/标尺：草稿后续修改、重新定标或报告更正都**不改变**旧报告结果；
+查询**只读**，不写回任何数据。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `POST /api/reports/:id/centroid-partition` | 请求体 `{ "fieldId": "<视野 id 或名称>" }`。报告不存在 → 404；视野标识为空/不存在/不属于该报告/重名 → 400（重名提示改用 id；**id 优先精确匹配**） |
+
+**划分语义**：
+
+- **参与像素**：像素中心**严格**落在视野净区域（外环内、不在孔洞内/边界上）的像素；
+  **视野孔洞内部与外部不分配**；
+- 每个参与像素分给其中心到各计入细胞**净区域质心**的像素欧氏距离**最近**者（比较平方距离）；
+  计入细胞 = 净区域质心严格落在该视野净区域内的细胞（与该视野冻结统计的 `cellCount` 同口径）；
+- **等距边界不计面积**：等距像素按**报告细胞顺序归首个等距细胞**（确定、可复现）；
+  **质心重合**时报告顺序的**首个细胞占有**对应区域，其余细胞保留 `areaPx=0` 的**零面积记录**；
+- 像素面积为参与像素计数（1 像素 = 1 px²，整数）；mm² 按报告**冻结标尺**换算
+  （未定标为 `null`、文本「待定标」）；
+- **有计入细胞时 `sumAreaPx = netPixelArea`**（各区面积合计＝视野净像素面积），占比合计 100%；
+- **无计入细胞**时 HTTP 仍为 200，`empty: true`、`partitions: []`、`runs: []`，并在 `message`
+  给出中文提示（调用方据此提示，而不是当作错误）。
+
+成功响应示例（节选；100×100 视野含 20×20 孔洞，甲/乙两细胞，1 px = 1 μm）：
+
+```json
+{
+  "scope": "report",
+  "reportId": "rep-1",
+  "title": "切片A 报告",
+  "draftVersion": 4,
+  "calibrated": true,
+  "scaleUmPerPx": 1,
+  "matchedBy": "id",
+  "snapshotUrl": "/api/reports/rep-1/file",
+  "empty": false,
+  "message": null,
+  "partition": {
+    "kind": "centroid-partition",
+    "fieldId": "fieldF", "fieldName": "中心视野", "fieldHoles": 1,
+    "empty": false,
+    "countedCellCount": 2,
+    "bounds": { "minX": 0, "minY": 0, "maxX": 100, "maxY": 100 },
+    "netPixelArea": 9600,
+    "vectorAreaPx": 9600,
+    "netAreaMm2": 0.0096, "netAreaText": "0.0096",
+    "sumAreaPx": 9600,
+    "partitions": [
+      {
+        "key": "cellA", "cellIndex": 0, "name": "甲",
+        "centroid": { "x": 25, "y": 50 },
+        "areaPx": 4880, "areaMm2": 0.00488, "areaText": "0.00488",
+        "ratio": 0.508333, "ratioPercent": 50.8333, "ratioText": "50.8333%",
+        "zeroArea": false,
+        "polygons": [
+          [ { "x": 0, "y": 0 }, { "x": 51, "y": 0 }, { "x": 51, "y": 40 },
+            { "x": 40, "y": 40 }, { "x": 40, "y": 60 }, { "x": 51, "y": 60 },
+            { "x": 51, "y": 100 }, { "x": 0, "y": 100 }, { "x": 0, "y": 0 } ]
+        ]
+      },
+      {
+        "key": "cellB", "cellIndex": 1, "name": "乙",
+        "centroid": { "x": 76, "y": 50 },
+        "areaPx": 4720, "areaMm2": 0.00472, "areaText": "0.00472",
+        "ratio": 0.491667, "ratioPercent": 49.1667, "ratioText": "49.1667%",
+        "zeroArea": false,
+        "polygons": [ [ /* …该责任区边界（可能含多个环）… */ ] ]
+      }
+    ],
+    "runs": [
+      { "y": 0,  "x0": 0, "x1": 50, "owner": 0 },
+      { "y": 0,  "x0": 51, "x1": 99, "owner": 1 },
+      { "y": 40, "x0": 0, "x1": 39, "owner": 0 }
+    ],
+    "overlay": {
+      "centroids": [
+        { "key": "cellA", "x": 25, "y": 50 },
+        { "key": "cellB", "x": 76, "y": 50 }
+      ]
+    },
+    "calibrated": true
+  }
+}
+```
+
+- `partitions` 按**报告细胞顺序**给出全部计入细胞（含被质心重合挤掉的零面积细胞）：
+  - `polygons`：像素等值线提取并 Douglas–Peucker 简化后的实际分区多边形环（图片像素坐标，
+    可能多个：视野含孔洞、分区被孔洞切穿时为多环）；零面积细胞为空数组；
+  - `runs`：逐行 RLE 游程 `{y, x0, x1, owner}`（坐标为全局像素整数、列段含端点，`owner` 为
+    `partitions` 的下标）——它是分区的**逐像素真值**，各游程长度之和等于 `netPixelArea`，
+    适合精确命中测试与逐像素重绘；
+  - `bounds` 为参与像素的像素格包围盒（`maxX/maxY` 为右/下边界格线，非像素列号）；
+- `vectorAreaPx` 是鞋带公式的矢量净面积，仅作对照；**面积合计校验以像素面积为准**；
+- 细胞标识 `key` 为细胞 `id`（历史无 id 数据为 `#序号`，与视野统计/网格分析同一约定）。
+
+**无计入细胞**的响应（200，空结果）：
+
+```json
+{
+  "scope": "report", "reportId": "rep-1", "empty": true,
+  "message": "该视野没有任何计入细胞（无净区域质心严格落在视野净区域内的细胞），视野净区域不做分配，返回空结果。",
+  "partition": {
+    "kind": "centroid-partition", "fieldId": "fieldE", "fieldName": "空视野",
+    "empty": true, "countedCellCount": 0, "bounds": null,
+    "netPixelArea": 0, "vectorAreaPx": 2500, "netAreaMm2": null,
+    "sumAreaPx": 0, "partitions": [], "runs": [],
+    "overlay": { "centroids": [] }, "calibrated": true
+  }
+}
+```
+
+curl 示例（`RID` 为报告标识）：
+
+```bash
+# 取报告冻结的视野 id
+curl -s http://localhost:8080/api/reports/$RID | jq '.fields[] | {id, name}'
+
+# 按视野 id 划分责任区
+curl -s -X POST http://localhost:8080/api/reports/$RID/centroid-partition \
+  -H 'Content-Type: application/json' -d '{"fieldId":"fieldF"}' \
+  | jq '.partition | {fieldName, netPixelArea, sumAreaPx,
+                      cells: [.partitions[] | {key, areaPx, areaText, ratioText, zeroArea}]}'
+
+# 按视野名称（名称首尾空白会被 trim；重名时报错并提示改用 id）
+curl -s -X POST http://localhost:8080/api/reports/$RID/centroid-partition \
+  -H 'Content-Type: application/json' -d '{"fieldId":"中心视野"}'
+
+# 视野标识为空 / 不存在 / 重名 → 400；报告不存在 → 404
+curl -s -X POST http://localhost:8080/api/reports/$RID/centroid-partition \
+  -H 'Content-Type: application/json' -d '{"fieldId":"ghost"}'
+# -> { "error": "视野标识不存在：ghost（不属于该报告；请使用本报告发布时冻结的视野 id 或名称），请求被拒绝" }
+```
+
+Node.js 示例（无第三方依赖）：
+
+```js
+const base = 'http://localhost:8080';
+
+async function centroidPartition(reportId, fieldId) {
+  const res = await fetch(`${base}/api/reports/${reportId}/centroid-partition`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fieldId })
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const e = new Error(body.error || `HTTP ${res.status}`);
+    e.status = res.status; // 400：视野标识非法/重名；404：报告不存在
+    throw e;
+  }
+  const p = body.partition;
+  if (body.empty) {
+    console.log(body.message); // 无计入细胞：空结果
+    return body;
+  }
+  console.log(`视野 ${p.fieldName}：净像素面积 ${p.netPixelArea}，各区合计 ${p.sumAreaPx}`);
+  for (const part of p.partitions) {
+    console.log(`细胞 ${part.name || part.key}：质心 (${part.centroid.x}, ${part.centroid.y})，` +
+                `${part.areaPx} px² / ${part.areaText} mm²，占比 ${part.ratioText}` +
+                (part.zeroArea ? '（零面积）' : ''));
+  }
+  // 像素命中（图片原始像素坐标）：runs 按 y 升序
+  function ownerAt(x, y) {
+    const px = Math.floor(x), py = Math.floor(y);
+    const rn = p.runs.find((z) => z.y === py && z.x0 <= px && px <= z.x1);
+    return rn ? p.partitions[rn.owner].key : null;
+  }
+  return body;
+}
+
+await centroidPartition(process.env.RID, 'fieldF');
+```
+
+页面入口：报告详情页「**细胞最近质心责任区（发布时冻结）**」面板——选择/输入视野后
+「划分责任区」，结果表格与快照上的彩色分区同步呈现，**直接点击快照上的分区色块**
+（或点击表格行）即可高亮查看对应细胞；「清除分区」移除叠加。
+
 ## 全部 HTTP 接口一览（既有 + 本轮）
 
 | 方法与路径 | 说明 |
@@ -1349,6 +1572,7 @@ await fieldGrid(process.env.RID, 'fieldF', 4, 4);
 | **`POST /api/reports/:id/field-coverage`** | **报告内单视野细胞覆盖核对（只读，几何交集；只取发布时冻结数据；视野标识为空/不存在/不属于该报告 400，报告不存在 404）** |
 | **`POST /api/reports/:id/contacts`** | **细胞接触簇分析（只读）：`{thresholdUm}`（μm，允许 0）→ 阈值内邻居/最短净区域间距/连通簇；阈值负数或非有限数 400，报告不存在 404** |
 | **`POST /api/reports/:id/field-grid`** | **报告单视野网格密度分析（只读）：`{fieldId, rows, cols}`（行列各 1～40）→ 视野外接矩形等分网格，每格有效面积（px²/mm²，格子∩净区域）、细胞数、每 mm² 密度（零面积格「不可计算」）与网格叠加几何；计数合计＝原视野统计；视野标识为空/不存在/重名或行列数越界 400，报告不存在 404；草稿修改或更正不影响旧报告** |
+| **`POST /api/reports/:id/centroid-partition`** | **报告单视野最近质心责任区划分（只读）：`{fieldId}` → 视野净区域按像素欧氏距离分给最近计入细胞（孔洞及外部不分配、等距归报告顺序首个、质心重合其余零面积），返回每细胞分区多边形/RLE、像素/mm² 面积与占比（合计＝视野净像素面积）；无计入细胞返回空结果；视野标识为空/不存在/重名 400，报告不存在 404；草稿修改或更正不影响旧报告** |
 | **`POST /api/reports/field-coverage-diff`** | **同切片两报告单视野覆盖变化核对（只读）：`{baselineReportId, retestReportId, fieldId}` → 共同/仅复测/仅基线/始终未覆盖四类像素面积、占比、按基线标尺的 mm² 与可叠加区域/边界几何；相同报告/不同切片/视野不存在或重名 400，报告不存在 404；草稿修改或更正不影响旧报告** |
 | `GET /api/reports/:id/file` / `/png` | 发布时图片快照 / 标注 PNG |
 | `GET /api/reports/:id/csv` | 测量 CSV（μm²，原义不变） |
