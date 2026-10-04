@@ -365,6 +365,23 @@
           <div id="rp-grid-result"></div>
         </div>
         <div class="panel">
+          <h3>最近质心责任区（发布时冻结）</h3>
+          <p class="hint">选择<b>本报告内一个视野</b>：把视野<b>净区域</b>（外环扣除孔洞）按<b>像素欧氏距离</b>
+            分给距离最近的<b>计入细胞</b>（沿用净区域质心与视野严格归属规则——质心严格落在视野净区域内才计入）。
+            视野孔洞及视野外部<b>不分配</b>；等距边界不计面积；<b>质心重合</b>时按报告细胞顺序由首个细胞占有，
+            其余细胞保留零面积记录。返回每个细胞的实际分区几何、像素与 mm² 面积和占比，
+            有计入细胞时各区面积合计<b>等于视野净面积</b>；无计入细胞时返回空结果并提示。
+            结果只读取<b>发布时冻结数据</b>，后续草稿修改或报告更正不改变本报告结果；查询为只读，不写回报告。</p>
+          <div class="toolbar wrap">
+            <input type="text" id="rp-zones-field-id" class="contact-threshold"
+                   placeholder="视野 id 或视野名称" list="rp-zones-field-options" />
+            <datalist id="rp-zones-field-options"></datalist>
+            <button id="rp-zones-run" class="primary small">分析责任区</button>
+            <button id="rp-zones-clear" class="small hidden">清除分区</button>
+          </div>
+          <div id="rp-zones-result"></div>
+        </div>
+        <div class="panel">
           <h3>接触簇分析（间距阈值）</h3>
           <p class="hint">输入<b>间距阈值（微米，允许 0）</b>，按发布时<b>冻结的轮廓与定标</b>计算：
             距离取两个细胞<b>外轮廓扣除孔洞后的净区域</b>最短间距——区域重叠或边界接触时为 0；

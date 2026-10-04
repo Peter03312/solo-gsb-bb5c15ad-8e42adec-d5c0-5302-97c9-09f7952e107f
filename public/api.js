@@ -131,6 +131,14 @@ const API = {
       body: JSON.stringify(payload)
     }));
   },
+  // 单视野最近质心责任区分析：报告冻结视野净区域按像素距离分给最近计入细胞（只读）
+  async reportFieldZones(reportId, fieldId) {
+    return jsonOrThrow(await fetch(`/api/reports/${reportId}/field-zones`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fieldId })
+    }));
+  },
   async listReports() {
     return jsonOrThrow(await fetch('/api/reports'));
   },

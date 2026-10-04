@@ -27,6 +27,11 @@ const Reports = {
   gridResult: null,        // 最近一次网格密度分析结果（含 grid 对象）
   gridSelectedIndex: null, // 当前在结果表格中选中的格子 index（画布高亮用）
 
+  // 单视野最近质心责任区分析状态（只读查询，只使用发布时冻结数据）
+  zonesReportId: null,
+  zonesResult: null,       // 最近一次责任区分析结果（含 zones 对象）
+  zonesSelectedKey: null,  // 当前选中分区的细胞 key（画布高亮 + 表格联动）
+
   async showList() {
     document.getElementById('view-reports').classList.remove('hidden');
     await this.refresh();
@@ -310,6 +315,32 @@ const Reports = {
       };
     }
 
+    // 最近质心责任区分析：只读查询，只用发布时冻结数据；切换报告时重置
+    this.zonesReportId = r.id;
+    this.zonesResult = null;
+    this.zonesSelectedKey = null;
+    const zonesInput = document.getElementById('rp-zones-field-id');
+    if (zonesInput) zonesInput.value = '';
+    const zonesOptions = document.getElementById('rp-zones-field-options');
+    if (zonesOptions) {
+      zonesOptions.innerHTML = (r.fields || []).map((f, i) => {
+        const name = f.name || `视野 ${i + 1}`;
+        return `<option value="${this.esc(f.id)}">${this.esc(name)}</option>`;
+      }).join('');
+    }
+    document.getElementById('rp-zones-result').innerHTML =
+      (r.fields || []).length
+        ? '<p class="hint">输入视野 id 或名称后点「分析责任区」。</p>'
+        : '<p class="hint">本报告发布时未圈定取样视野，无法做责任区分析。</p>';
+    document.getElementById('rp-zones-clear').classList.add('hidden');
+    document.getElementById('rp-zones-run').onclick = () => this.runZonesAnalysis();
+    document.getElementById('rp-zones-clear').onclick = () => this.clearZonesOverlay();
+    if (zonesInput) {
+      zonesInput.onkeydown = (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); this.runZonesAnalysis(); }
+      };
+    }
+
     document.getElementById('rp-png-link').href = API.exportPngUrl(r.id);
     document.getElementById('rp-png-link').setAttribute('download', `${r.id}_annotated.png`);
     document.getElementById('rp-csv-link').href = API.exportCsvUrl(r.id);
@@ -327,8 +358,11 @@ const Reports = {
       cells: r.cells, fields: r.fields || [], calib: r.calib,
       activeCellId: null, highlightCellIds: this.contactHighlight,
       gridOverlay: this.gridResult ? this.gridResult.grid : null,
-      gridSelectedIndex: this.gridSelectedIndex
+      gridSelectedIndex: this.gridSelectedIndex,
+      zonesOverlay: this.zonesResult ? this.zonesResult.zones : null,
+      zonesSelectedKey: this.zonesSelectedKey
     }));
+    this.detailView.cb.onPickZone = (key) => this.selectZoneOnCanvas(key);
     await this.detailView.loadImage(`/api/reports/${r.id}/file`, r.width, r.height);
     this.detailView.readOnly = true;
     this.detailView.setTool('pan');
@@ -350,6 +384,9 @@ const Reports = {
     this.gridReportId = null;
     this.gridResult = null;
     this.gridSelectedIndex = null;
+    this.zonesReportId = null;
+    this.zonesResult = null;
+    this.zonesSelectedKey = null;
   },
 
   esc(s) {
@@ -720,6 +757,135 @@ const Reports = {
     document.getElementById('rp-grid-result').innerHTML =
       '<p class="hint">选择视野并给定行×列数（各 1～40）后点「分析网格密度」。</p>';
     document.getElementById('rp-grid-clear').classList.add('hidden');
+    if (this.detailView) this.detailView.render();
+  },
+
+  // ---------- 单视野最近质心责任区分析（发布时冻结；只读 HTTP，不写回报告） ----------
+
+  async runZonesAnalysis() {
+    if (!this.zonesReportId) return;
+    const resEl = document.getElementById('rp-zones-result');
+    const fieldId = document.getElementById('rp-zones-field-id').value.trim();
+    if (!fieldId) {
+      resEl.innerHTML = '<p class="merge-error">请输入视野 id 或视野名称。</p>';
+      return;
+    }
+    resEl.innerHTML = '<p class="hint">计算中…</p>';
+    try {
+      const body = await API.reportFieldZones(this.zonesReportId, fieldId);
+      if (body.reportId !== this.zonesReportId) return; // 期间已切换报告
+      this.zonesResult = body;
+      this.zonesSelectedKey = null;
+      this.renderZonesResult();
+    } catch (e) {
+      // 400：视野标识为空/不存在/重名；404：报告不存在。不写回任何数据
+      this.zonesResult = null;
+      this.zonesSelectedKey = null;
+      resEl.innerHTML = `<p class="merge-error">${this.esc(e.message)}</p>`;
+    }
+    document.getElementById('rp-zones-clear').classList.toggle('hidden', !this.zonesResult);
+    if (this.detailView) this.detailView.render();
+  },
+
+  renderZonesResult() {
+    const resEl = document.getElementById('rp-zones-result');
+    const body = this.zonesResult;
+    if (!body) return;
+    const z = body.zones;
+
+    // 无计入细胞：空结果提示（视野净区域不分配）
+    if (z.empty) {
+      resEl.innerHTML = `
+        <table class="measure compact">
+          <tbody>
+            <tr><th>视野</th><td>${this.esc(z.fieldName || z.fieldId)}${body.matchedBy === 'name' ? '（按名称匹配）' : ''}</td></tr>
+            <tr><th>视野净面积</th><td>${this.fmtPx(z.fieldAreaPx)} px² · ${this.esc(z.fieldAreaText)} mm²</td></tr>
+            <tr><th>计入细胞</th><td><b>0</b> 个</td></tr>
+          </tbody>
+        </table>
+        <p class="merge-error">${this.esc(z.message)}</p>
+        <p class="hint">结果只读取<b>发布时冻结数据</b>（发布时草稿 v${body.draftVersion}），查询不写回报告。</p>`;
+      return;
+    }
+
+    // 每个细胞一行：占有细胞有实际分区与占比；质心重合的跟随细胞零面积并注明占有者
+    const rowsHtml = z.zones.map((zn) => {
+      const active = this.zonesSelectedKey === zn.key ? ' class="grid-row-active"' : '';
+      const colorIdx = this._zoneColorIndex(zn.key);
+      const dot = colorIdx == null ? '○'
+        : `<span style="color:${window.CANVAS_COLORS[colorIdx % window.CANVAS_COLORS.length]}">●</span>`;
+      const tag = zn.coincident
+        ? ` <span class="hint">（质心与 ${this.esc(zn.coincidentWith.join('、'))} 重合，按报告顺序不占有区域）</span>`
+        : '';
+      return `<tr data-zone-key="${this.esc(zn.key)}"${active}>` +
+        `<td>${dot} ${this.esc(zn.name || `细胞 ${zn.seq}`)}${tag}</td>` +
+        `<td>${this.fmtPx(zn.areaPx)}</td>` +
+        `<td>${this.esc(zn.areaText)}</td>` +
+        `<td>${this.esc(zn.percentText)}</td></tr>`;
+    }).join('');
+
+    const excludedHtml = z.excludedCells.length
+      ? `<p class="hint">未计入细胞 ${z.excludedCellCount} 个（不参与分配）：` +
+        z.excludedCells.map((c) => `${this.esc(c.name || `细胞 ${c.seq}`)}（${this.esc(c.reason)}）`).join('；') +
+        '。</p>'
+      : '';
+
+    resEl.innerHTML = `
+      <table class="measure compact">
+        <tbody>
+          <tr><th>视野</th><td>${this.esc(z.fieldName || z.fieldId)}${body.matchedBy === 'name' ? '（按名称匹配）' : ''}（孔洞 ${z.fieldHoles} 个）</td></tr>
+          <tr><th>视野净面积</th><td>${this.fmtPx(z.fieldAreaPx)} px² · ${this.esc(z.fieldAreaText)} mm²</td></tr>
+          <tr><th>计入细胞</th><td>${z.countedCellCount} 个（占有位置 ${z.ownerCellCount} 个${z.coincidentCellCount ? `，质心重合零面积 ${z.coincidentCellCount} 个` : ''}；未计入 ${z.excludedCellCount} 个）</td></tr>
+          <tr><th>各区面积合计</th><td><b>${this.fmtPx(z.sumAreaPx)} px² · ${this.esc(z.sumAreaText)} mm²</b>（＝视野净面积），占比合计 ${z.sumPercent}%</td></tr>
+        </tbody>
+      </table>
+      <div class="grid-table-wrap">
+        <table class="measure compact">
+          <thead><tr><th>细胞（按报告顺序）</th><th>责任区面积 px²</th><th>责任区面积 mm²</th><th>占视野净面积</th></tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+      ${excludedHtml}
+      <p class="hint">分区按像素欧氏距离归属最近的计入细胞（净区域质心严格落在视野净区域内）；
+        视野孔洞及外部不分配，等距边界不计面积；快照上各色块为细胞实际责任区，品红点为计入细胞质心，
+        <b>点击表格行或快照上的分区</b>可高亮定位（再点一次取消）。
+        结果只读取<b>发布时冻结数据</b>（发布时草稿 v${body.draftVersion}），
+        后续草稿修改或报告更正均不改变本报告结果；查询不写回报告。</p>`;
+    resEl.querySelectorAll('tr[data-zone-key]').forEach((tr) => {
+      tr.onclick = () => this.selectZoneKey(tr.dataset.zoneKey);
+    });
+  },
+
+  // 占有细胞在 overlay.zones 中的颜色序号（质心重合的跟随细胞没有分区颜色）
+  _zoneColorIndex(key) {
+    const ov = this.zonesResult && this.zonesResult.zones && this.zonesResult.zones.overlay;
+    if (!ov) return null;
+    const idx = ov.zones.findIndex((x) => x.key === key);
+    return idx < 0 ? null : idx;
+  },
+
+  // 表格行选择：与快照高亮联动
+  selectZoneKey(key) {
+    if (!this.zonesResult) return;
+    this.zonesSelectedKey = this.zonesSelectedKey === key ? null : key;
+    this.renderZonesResult();
+    if (this.detailView) this.detailView.render();
+  },
+
+  // 快照点击选择：点中分区则选中该占有细胞（再点同一分区取消）；点空白清空选择
+  selectZoneOnCanvas(key) {
+    if (!this.zonesResult) return;
+    this.zonesSelectedKey = (key && key !== this.zonesSelectedKey) ? key : null;
+    this.renderZonesResult();
+    if (this.detailView) this.detailView.render();
+  },
+
+  clearZonesOverlay() {
+    this.zonesResult = null;
+    this.zonesSelectedKey = null;
+    document.getElementById('rp-zones-result').innerHTML =
+      '<p class="hint">输入视野 id 或名称后点「分析责任区」。</p>';
+    document.getElementById('rp-zones-clear').classList.add('hidden');
     if (this.detailView) this.detailView.render();
   },
 

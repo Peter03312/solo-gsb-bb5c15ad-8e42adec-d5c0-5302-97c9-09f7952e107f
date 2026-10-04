@@ -37,6 +37,7 @@ class CanvasView {
     this._onDown = this.onDown.bind(this);
     this._onMove = this.onMove.bind(this);
     this._onUp = this.onUp.bind(this);
+    this._downPos = null; // 按下位置（屏幕像素），用于区分点击与拖动平移
     this._onDbl = this.onDblClick.bind(this);
     this._onContext = (e) => e.preventDefault();
     this._onKeyDown = (e) => { if (e.code === 'Space') this.spaceDown = true; };
@@ -125,6 +126,7 @@ class CanvasView {
 
   onDown(e) {
     const st = this.getState();
+    this._downPos = { x: e.clientX, y: e.clientY };
     // 只读模式（如修订预览）：所有绘制/定标/迁移点击一律退化为平移
     if (st.readOnly) {
       this.panning = true;
@@ -182,9 +184,25 @@ class CanvasView {
     this.render();
   }
 
-  onUp() {
+  onUp(e) {
+    const wasPanning = this.panning;
     this.panning = false;
     this.canvas.classList.remove('panning');
+    // 只读模式下区分「点击」与「拖动平移」：位移很小视为点击，用于责任区分区拾取
+    if (wasPanning && this._downPos) {
+      const moved = Math.hypot(e.clientX - this._downPos.x, e.clientY - this._downPos.y);
+      this._downPos = null;
+      if (moved <= 5) {
+        const st = this.getState();
+        if (st.readOnly && st.zonesOverlay && this.cb.onPickZone) {
+          const rect = this.canvas.getBoundingClientRect();
+          const pt = this.toImage(e.clientX - rect.left, e.clientY - rect.top);
+          this.cb.onPickZone(this.pickZone(pt, st.zonesOverlay), pt);
+        }
+      }
+    } else {
+      this._downPos = null;
+    }
   }
 
   onDblClick(e) {
@@ -257,6 +275,9 @@ class CanvasView {
 
     // 视野网格密度分析叠加（报告详情页；数据来自只读 HTTP 接口，与表格数值同源）
     if (st.gridOverlay) this.drawGridOverlay(ctx, st.gridOverlay, st.gridSelectedIndex);
+
+    // 最近质心责任区叠加（报告详情页；数据来自只读 HTTP 接口）
+    if (st.zonesOverlay) this.drawZonesOverlay(ctx, st.zonesOverlay, st.zonesSelectedKey);
 
     // 正在绘制的环
     if (st.drawing) {
@@ -415,6 +436,80 @@ class CanvasView {
       ctx.strokeStyle = '#102027';
       ctx.stroke();
     }
+  }
+
+  // 最近质心责任区叠加：每个占有细胞的实际分区（填色按细胞序号）、等距边界、
+  // 计入细胞的净区域质心点；选中分区高亮。zones 为 field-zones 接口的 overlay 对象。
+  drawZonesOverlay(ctx, overlay, selectedKey) {
+    const zones = overlay.zones || [];
+    // 分区填色：把所有圈（外块 CCW + 孔 CW）画进同一条路径，用 evenodd 让孔洞透出底图
+    zones.forEach((z, i) => {
+      const color = CELL_COLORS[(z.colorIndex != null ? z.colorIndex : i) % CELL_COLORS.length];
+      const active = selectedKey === z.key;
+      for (const loop of z.loops || []) {
+        if (loop.length < 3) continue;
+        ctx.beginPath();
+        ctx.moveTo(loop[0].x, loop[0].y);
+        for (let k = 1; k < loop.length; k++) ctx.lineTo(loop[k].x, loop[k].y);
+        ctx.closePath();
+        ctx.fillStyle = color + (active ? '66' : '33');
+        ctx.fill('evenodd');
+      }
+    });
+    // 分区边界（等距边界 + 视野外环/孔洞交线）：白色描边便于在快照上辨认
+    zones.forEach((z, i) => {
+      const color = CELL_COLORS[(z.colorIndex != null ? z.colorIndex : i) % CELL_COLORS.length];
+      const active = selectedKey === z.key;
+      for (const loop of z.loops || []) {
+        if (loop.length < 3) continue;
+        ctx.beginPath();
+        ctx.moveTo(loop[0].x, loop[0].y);
+        for (let k = 1; k < loop.length; k++) ctx.lineTo(loop[k].x, loop[k].y);
+        ctx.closePath();
+        ctx.lineJoin = 'round';
+        ctx.strokeStyle = active ? '#ff9f1c' : color;
+        ctx.lineWidth = (active ? 3.4 : 1.6) / this.k;
+        ctx.stroke();
+      }
+    });
+    // 计入细胞的净区域质心（品红圆点）
+    for (const m of overlay.centroids || []) {
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, 3.5 / this.k, 0, Math.PI * 2);
+      ctx.fillStyle = '#ff2fb3';
+      ctx.fill();
+      ctx.lineWidth = 1.2 / this.k;
+      ctx.strokeStyle = '#102027';
+      ctx.stroke();
+    }
+  }
+
+  // 责任区分区拾取：点是否落在某占有细胞的任一实际分区内（圈按 evenodd 判定）。
+  // 返回该分区细胞 key；不在任何分区（孔洞/外部/等距边界）返回 null。
+  pickZone(pt, overlay) {
+    if (!overlay) return null;
+    const zones = overlay.zones || [];
+    for (const z of zones) {
+      let hit = false;
+      for (const loop of z.loops || []) {
+        if (loop.length >= 3 && this.pointInRing(pt, loop)) hit = !hit;
+      }
+      if (hit) return z.key;
+    }
+    return null;
+  }
+
+  // 射线法点在环内（环上按内部处理——拾取容差由调用方决定）
+  pointInRing(p, ring) {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const a = ring[i], b = ring[j];
+      if (((a.y > p.y) !== (b.y > p.y)) &&
+          p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) {
+        inside = !inside;
+      }
+    }
+    return inside;
   }
 
   drawPolygon(ctx, poly, opt) {

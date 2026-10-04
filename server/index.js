@@ -18,6 +18,7 @@ const clustersSvc = require('./clusters');
 const revisionsSvc = require('./revisions');
 const coverageDiffSvc = require('./coverage-diff');
 const fieldGridSvc = require('./field-grid');
+const fieldZonesSvc = require('./field-zones');
 const { renderAnnotatedPng } = require('./render');
 const { buildReportCsv, buildCombinedCsv, buildComparisonCsv, buildFieldStatsCsv, streamZip } = require('./exporter');
 
@@ -832,6 +833,48 @@ app.post('/api/reports/:id/field-grid', (req, res) => {
     matchedBy: resolved.matchBy,
     snapshotUrl: `/api/reports/${report.id}/file`,
     grid
+  });
+});
+
+// ---------- 报告单视野「最近质心责任区」分析（只读；只使用发布时冻结数据） ----------
+//
+// 请求体：{ fieldId }，视野 id 或名称（必须来自该报告冻结的 fields），id 优先精确匹配。
+// 把视野净区域（外环扣除孔洞）按像素欧氏距离分给最近的计入细胞（沿用净区域质心与
+// 视野严格归属规则）；视野孔洞及外部不分配；等距边界不计面积；质心重合按报告细胞
+// 顺序由首个占有，其余保留零面积记录。返回每个细胞的实际分区几何、像素/mm² 面积与
+// 占比（有计入细胞时各区合计＝视野净面积）；无计入细胞时返回空结果并提示。
+// 视野标识不存在或名称歧义 → 400；报告不存在 → 404；查询不写回任何数据。
+app.post('/api/reports/:id/field-zones', (req, res) => {
+  const report = getReportOr404(req.params.id);
+  if (!report) return res.status(404).json({ error: '报告不存在' });
+  const body = req.body || {};
+
+  let resolved;
+  try {
+    resolved = fieldZonesSvc.resolveZonesField(report.fields, body.fieldId);
+  } catch (e) {
+    return res.status(e.status || 400).json({ error: e.message });
+  }
+
+  let zones;
+  try {
+    zones = fieldZonesSvc.buildFieldZones(
+      resolved.field, resolved.index, report.cells,
+      report.calib ? report.calib.scale : null);
+  } catch (e) {
+    return res.status(500).json({ error: `最近质心责任区分析失败：${e.message}` });
+  }
+
+  res.json({
+    scope: 'report',
+    reportId: report.id,
+    title: report.title,
+    draftVersion: report.draftVersion,
+    calibrated: !!report.calib,
+    scaleUmPerPx: report.calib ? report.calib.scale : null,
+    matchedBy: resolved.matchBy,
+    snapshotUrl: `/api/reports/${report.id}/file`,
+    zones
   });
 });
 
